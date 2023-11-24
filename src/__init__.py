@@ -28,10 +28,8 @@ class Codebook(nn.Module):
         x = rearrange(x, 'b c h w -> (b h w) c')
 
         tokens = torch.mean(torch.square(self.embedding.weight - x.unsqueeze(1)), dim=2).argmin(dim=1)
-
         quantized = x + (self.embedding(tokens) - x).detach()
         quantized = quantized.view(B, C, H, W)
-
         tokens = tokens.view(B, H, W)
         
         return quantized, tokens
@@ -69,8 +67,8 @@ class ResidualBlock(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
 
-        x = x + self.convolution_1(F.relu(x))
-        x = x + self.convolution_2(F.relu(x))
+        x = x + F.leaky_relu(self.convolution_1(x))
+        x = x + F.leaky_relu(self.convolution_2(x))
 
         return x
 
@@ -127,6 +125,7 @@ class UpsamplingBlock(nn.Module):
         self.out_channels = out_channels
 
         self.layers = nn.Sequential(
+            nn.LeakyReLU(),
             nn.GroupNorm(
                 num_groups=4, 
                 num_channels=in_channels,
@@ -139,7 +138,6 @@ class UpsamplingBlock(nn.Module):
                 stride=1,
                 padding=1,
             ),
-            nn.LeakyReLU(),
         )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
