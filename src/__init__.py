@@ -12,7 +12,7 @@ class Codebook(nn.Module):
         """Initializes the module."""
 
         super().__init__()
-        
+
         self.codebook_size = codebook_size
         self.embedding_dimension = embedding_dimension
 
@@ -20,19 +20,27 @@ class Codebook(nn.Module):
             num_embeddings=codebook_size,
             embedding_dim=embedding_dimension,
         )
-    
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+
+    def forward(
+        self,
+        x: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass."""
 
         B, C, H, W = x.shape
         x = rearrange(x, 'b c h w -> (b h w) c')
 
-        tokens = torch.mean(torch.square(self.embedding.weight - x.unsqueeze(1)), dim=2).argmin(dim=1)
-        quantized = x + (self.embedding(tokens) - x).detach()
+        tokens = torch.mean(torch.square(x.unsqueeze(1) - self.embedding.weight), dim=2).argmin(dim=1).detach()
+
+        quantized = self.embedding(tokens)
+        codebook_loss = F.mse_loss(quantized, x.detach(), reduction='sum')
+        commitment_loss = F.mse_loss(x, quantized.detach(), reduction='sum')
+
+        quantized = x + (quantized.detach() - x)
         quantized = quantized.view(B, C, H, W)
         tokens = tokens.view(B, H, W)
-        
-        return quantized, tokens
+
+        return quantized, tokens, codebook_loss, commitment_loss
 
 
 class ResidualBlock(nn.Module):
@@ -63,7 +71,7 @@ class ResidualBlock(nn.Module):
             stride=1,
             padding=0,
         )
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
 
@@ -102,7 +110,7 @@ class DownsamplingBlock(nn.Module):
                 num_channels=out_channels,
             ),
         )
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
 
@@ -125,12 +133,12 @@ class UpsamplingBlock(nn.Module):
         self.out_channels = out_channels
 
         self.layers = nn.Sequential(
+            nn.Upsample(scale_factor=2),
             nn.LeakyReLU(),
             nn.GroupNorm(
-                num_groups=4, 
+                num_groups=4,
                 num_channels=in_channels,
             ),
-            nn.Upsample(scale_factor=2),
             nn.Conv2d(
                 in_channels=in_channels,
                 out_channels=out_channels,
@@ -139,7 +147,7 @@ class UpsamplingBlock(nn.Module):
                 padding=1,
             ),
         )
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
 
@@ -153,6 +161,7 @@ class VQVAE(nn.Module):
         in_channels: int,
         hidden_channels: int,
         codebook_size: int,
+        beta: float,
     ) -> None:
         """Initializes the module."""
 
@@ -161,6 +170,7 @@ class VQVAE(nn.Module):
         self.in_channels = in_channels
         self.hidden_channels = hidden_channels
         self.codebook_size = codebook_size
+        self.beta = beta
 
         self.encoder = nn.Sequential(
             DownsamplingBlock(
@@ -192,15 +202,18 @@ class VQVAE(nn.Module):
             codebook_size=codebook_size,
             embedding_dimension=hidden_channels,
         )
-    
+
     def forward(
-        self, 
+        self,
         x: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass."""
 
         embedding = self.encoder(x)
-        quantized, tokens = self.codebook(embedding)
-        reconstruction = self.decoder(quantized)
+        quantized, tokens, codebook_loss, commitment_loss = self.codebook(embedding)
+        reconstruction = F.sigmoid(self.decoder(quantized))
 
-        return reconstruction, embedding, quantized, tokens
+        reconstruction_loss = F.binary_cross_entropy(reconstruction, x, reduction='sum')
+        loss = reconstruction_loss + codebook_loss + self.beta*commitment_loss
+
+        return reconstruction, tokens, loss, reconstruction_loss, codebook_loss, commitment_loss
