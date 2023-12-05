@@ -1,3 +1,3 @@
-# VQ-GAN
+# VQ-VAE
 
-An implementation of VQ-GAN in PyTorch.
+An implementation of VQ-VAE in PyTorch.
