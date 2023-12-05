@@ -1,15 +1,15 @@
 from typing import Tuple
 
 
-class Codebook(nn.Module):
-    """Codebook."""
+class VectorQuantizer(nn.Module):
+    """Vector quantizer."""
 
     def __init__(
         self,
         codebook_size: int,
         embedding_dimension: int,
     ) -> None:
-        """Initializes the module."""
+        """Initialize the module."""
 
         super().__init__()
 
@@ -29,18 +29,64 @@ class Codebook(nn.Module):
 
         B, C, H, W = x.shape
         x = rearrange(x, 'b c h w -> (b h w) c')
-
-        tokens = torch.mean(torch.square(x.unsqueeze(1) - self.embedding.weight), dim=2).argmin(dim=1).detach()
+        
+        distance = torch.sum(x ** 2, dim=1, keepdim=True) \
+            + torch.sum(self.embedding.weight ** 2, dim=1) \
+            - 2*(x @ self.embedding.weight.T)
+        
+        tokens = distance.argmin(dim=1).detach()
 
         quantized = self.embedding(tokens)
-        codebook_loss = F.mse_loss(quantized, x.detach(), reduction='sum')
-        commitment_loss = F.mse_loss(x, quantized.detach(), reduction='sum')
+        codebook_loss = F.mse_loss(quantized, x.detach())
+        commitment_loss = F.mse_loss(x, quantized.detach())
 
-        quantized = x + (quantized.detach() - x)
-        quantized = quantized.view(B, C, H, W)
+        quantized = x + (quantized - x).detach()
+        quantized = rearrange(quantized, '(b h w) c -> b c h w', h=H, w=W)
         tokens = tokens.view(B, H, W)
 
         return quantized, tokens, codebook_loss, commitment_loss
+
+
+# class Codebook(nn.Module):
+#     """Codebook."""
+
+#     def __init__(
+#         self,
+#         codebook_size: int,
+#         embedding_dimension: int,
+#     ) -> None:
+#         """Initializes the module."""
+
+#         super().__init__()
+
+#         self.codebook_size = codebook_size
+#         self.embedding_dimension = embedding_dimension
+
+#         self.embedding = nn.Embedding(
+#             num_embeddings=codebook_size,
+#             embedding_dim=embedding_dimension,
+#         )
+
+#     def forward(
+#         self,
+#         x: torch.Tensor,
+#     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+#         """Forward pass."""
+
+#         B, C, H, W = x.shape
+#         x = rearrange(x, 'b c h w -> (b h w) c')
+
+#         tokens = torch.mean(torch.square(x.unsqueeze(1) - self.embedding.weight), dim=2).argmin(dim=1).detach()
+
+#         quantized = self.embedding(tokens)
+#         codebook_loss = F.mse_loss(quantized, x.detach(), reduction='sum')
+#         commitment_loss = F.mse_loss(x, quantized.detach(), reduction='sum')
+
+#         quantized = x + (quantized.detach() - x)
+#         quantized = quantized.view(B, C, H, W)
+#         tokens = tokens.view(B, H, W)
+
+#         return quantized, tokens, codebook_loss, commitment_loss
 
 
 class ResidualBlock(nn.Module):
@@ -198,7 +244,7 @@ class VQVAE(nn.Module):
             ),
         )
 
-        self.codebook = Codebook(
+        self.codebook = VectorQuantizer(
             codebook_size=codebook_size,
             embedding_dimension=hidden_channels,
         )
